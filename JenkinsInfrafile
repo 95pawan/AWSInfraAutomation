@@ -1,0 +1,136 @@
+pipeline {
+    agent any
+    parameters{
+        
+		choice(
+            
+        choices:'\nYES\nNO',
+        description:'VM EXISTS?',
+        name:'VMFlag')
+		
+		choice(
+            
+        choices:'\nAzure\nAWS',
+        description:'choose the cloud provider',
+        name:'PUBLIC_CLOUD')
+		
+		choice(
+            
+        choices:'\nAnsible\nDocker',
+        description:'Way to install application',
+        name:'INFRA')
+    }
+	
+	environment {
+			
+		commit_id = sh(returnStdout: true, script: "git log -n 1 --pretty=format:'%h'").trim()
+			
+	}
+	
+    stages{
+		stage ('checkout'){
+		
+			when {
+                // checkout when Azure is  requested
+                expression { params.PUBLIC_CLOUD == 'Azure' }
+			}
+				 
+			steps{
+				checkout scm
+				}
+		}
+			 
+		stage ('checkout_AWS'){
+		
+			when {
+                expression { params.PUBLIC_CLOUD == 'AWS' }
+			}
+				
+			steps{
+				git credentialsId: 'd1d4fbac-ecd2-452f-82f4-e92ee4cd6e88', url: 'https://github.dxc.com/vrajamanick2/cloudformation.git'
+			}
+		}
+            
+        stage ('Initialize Terraform'){
+		
+            when {
+                expression { params.PUBLIC_CLOUD == 'Azure' && params.VMFlag == 'NO' }
+            }
+				
+            steps{
+            sh "terraform init"
+            }
+		}
+       
+        stage ('Terraform Apply'){
+		
+            when {
+                expression { params.PUBLIC_CLOUD == 'Azure' && params.VMFlag == 'NO' }
+            }
+				
+            steps{
+            
+            sh '''                 
+            terraform apply -input=true -auto-approve          
+            '''            
+            }
+        }
+            
+		stage ('Run Azure Playbook'){
+		
+			when {
+
+                expression { params.INFRA == 'Ansible' }
+            }
+			
+			steps{
+  ansiblePlaybook become: true,disableHostKeyChecking: true, credentialsId: 'dockerID', installation: 'ansible-2.8.0', inventory: '${WORKSPACE}/hosts', playbook: '${WORKSPACE}/node-js.yml'
+			}
+		}
+		
+
+		 stage("docker build"){
+			
+			when {
+  
+                expression { params.INFRA == 'Docker' }
+			}
+			
+			steps{			
+			
+			sh "docker build -t terra.azurecr.io/infraimage:${commit_id}  ."
+			
+			}
+		}
+  
+		stage("Push Image to Container Registry"){
+		
+			when {
+  
+                expression { params.INFRA == 'Docker' }
+			}
+		
+			steps{
+					
+				withCredentials([
+					[$class: 'UsernamePasswordMultiBinding', credentialsId: 'containerregistryID', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD']
+				])  
+				{
+				sh "docker login terra.azurecr.io -u '${env.USERNAME}' -p '${env.PASSWORD}'"
+				}
+				sh "docker push terra.azurecr.io/infraimage:${commit_id}"
+			}
+		}
+		
+		    stage("Kubernetes deployment")
+  {
+   when {
+                expression { params.INFRA == 'Docker' }
+            }
+	  steps{
+  sh "sed 's/\$COMMIT/${commit_id}/g' kube-wsqc-ui.yml | kubectl apply -f - " 
+  sh 'kubectl get services'
+  }
+  }
+}
+}
