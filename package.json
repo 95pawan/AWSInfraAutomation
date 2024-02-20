@@ -18,6 +18,6 @@
 		"timer":"*",
 		"timers":"*",		
 		"eureka-js-client": "*",
-		"ip": "1.1.5"
+		"ip": "1.1.9"
 	}
 }
